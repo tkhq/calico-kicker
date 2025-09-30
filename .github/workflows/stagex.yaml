@@ -56,6 +56,6 @@ jobs:
         shell: bash
         run: |
           for tag in ${tags}; do
-              docker tag "tkhq-mono/calico-kicker:latest" "ghcr.io/tkhq/calico-kicker:${tag}"
+              docker tag "tkhq/calico-kicker:latest" "ghcr.io/tkhq/calico-kicker:${tag}"
           done
           docker image push --all-tags "ghcr.io/tkhq/calico-kicker"
