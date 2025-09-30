@@ -5,3 +5,9 @@ There are a number of race conditions in Calico's CNI calico-node combo containe
 The calico kicker is a crude tool which provides a certain amount of time for `calico-node` to get its configuration in order and then, if it fails to do so, kills the Pod, such that it can try again.
 
 In order to operate, the `POD_NAME` environment variable _must_ be set, and the ServiceAccount under which the kicker runs must have delete privilege on Pods in the namespace in which it runs.
+
+# Kustomize
+
+This package comes with a Kustomize _Component_, found in the `kustomize/` directory.  Note that as a component, it must be included as such, not as a resource.
+
+While this will work with a standard Calico deployment, if you do not run Calico in its own `calico` namespace, you must also set `POD_NAMESPACE`.  For instance, the _default_ namespace for upstream calico is `kube-system`.
