@@ -1,0 +1,61 @@
+name: stagex
+# Cancel any previous runs of this workflow for a given PR or release tag
+concurrency:
+  cancel-in-progress: true
+  group: "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+      - "v*.*.*"
+    branches:
+      - main
+    paths:
+      - ".github/**"
+      - "main.go"
+      - "calico/**"
+  pull_request:
+    paths:
+      - ".github/**"
+      - "main.go"
+      - "calico/**"
+  workflow_dispatch: # Allows manual invocation
+
+jobs:
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    env:
+      tags: >-
+        ${{ github.ref == format('refs/heads/{0}', 'main') && 'latest' || '' }}
+        ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || '' }}
+        ${{ github.event_name == 'push' && github.ref_name || '' }}
+        sha-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Docker setup
+        uses: ./.github/actions/docker-setup
+        with:
+          dockerHub: ${{ secrets.DOCKERHUB_API_KEY }}
+          ghcr: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Calico Kicker
+        id: kicker
+        shell: bash
+        run: ./build.sh
+ 
+      - name: Upload common to GHCR
+        shell: bash
+        run: |
+          for tag in ${tags}; do
+              docker tag "tkhq-mono/calico-kicker:latest" "ghcr.io/tkhq/calico-kicker:${tag}"
+          done
+          docker image push --all-tags "ghcr.io/tkhq/calico-kicker"
