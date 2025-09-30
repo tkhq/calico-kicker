@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - patch: |
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: calico-node
+      spec:
+        template:
+          spec:
+            containers:
+              - name: kicker
+                image: ghcr.io/tkhq/calico-kicker
+                env:
+                  - name: POD_NAME
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.name
+resources:
+  - role:pod-killer.yaml
