@@ -12,6 +12,8 @@ patches:
             containers:
               - name: kicker
                 image: ghcr.io/tkhq/calico-kicker
+                command:
+                  - /calico-kicker
                 env:
                   - name: POD_NAME
                     valueFrom:
