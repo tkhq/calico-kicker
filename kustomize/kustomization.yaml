@@ -21,3 +21,6 @@ patches:
                         fieldPath: metadata.name
 resources:
   - role:pod-killer.yaml
+images:
+  - name: ghcr.io/tkhq/calico-kicker
+    newTag: v0.0.1-rc1@sha256:5f550e4e6482d4db4367c2a27252f012403d190029fc60be5a1762e580b8bd2c
