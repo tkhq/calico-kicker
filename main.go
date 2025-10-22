@@ -5,8 +5,10 @@ import (
 	"flag"
 	"log/slog"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jsimonetti/rtnetlink/v2"
@@ -46,45 +48,13 @@ func main() {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
 	}
 
-	conn, err := rtnetlink.Dial(nil)
-	if err != nil {
-		slog.Error("failed to create netlink connection", slog.String("error", err.Error()))
-
-		os.Exit(1)
-	}
-
-	defer conn.Close()
-
-	if len(calicoInterfaceNames) < 1 || calicoInterfaceNames[0] == "" {
-		calicoInterfaceNames = calico.DefaultInterfaceNames
-	}
-
-	ticker := time.NewTicker(checkInterval)
-	defer ticker.Stop()
-
-	ctx, cancel := context.WithTimeout(context.Background(), terminationTimeout)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	slog.Info("starting address monitor")
+	waitAddresses(ctx)
 
-	for range ticker.C {
-		if calico.AllIPsExist(conn, calicoInterfaceNames) {
-			slog.Info("all Calico addresses exist")
-
-			break
-		}
-
-		if ctx.Err() != nil {
-			slog.Error("time to wait for address to come live has expired; killing Pod")
-
-			killPod()
-		}
-	}
-
-	// sleep forever
-	for range time.After(time.Hour) {
-		slog.Debug("no-op")
-	}
+	// sleep until termination signal received
+	<-ctx.Done()
 }
 
 func killPod() {
@@ -131,4 +101,41 @@ func killPod() {
 		slog.String("pod_name", podName),
 		slog.String("pod_namespace", podNamespace),
 	)
+}
+
+func waitAddresses(parentCtx context.Context) {
+	conn, err := rtnetlink.Dial(nil)
+	if err != nil {
+		slog.Error("failed to create netlink connection", slog.String("error", err.Error()))
+
+		os.Exit(1)
+	}
+
+	defer conn.Close()
+
+	if len(calicoInterfaceNames) < 1 || calicoInterfaceNames[0] == "" {
+		calicoInterfaceNames = calico.DefaultInterfaceNames
+	}
+
+	ticker := time.NewTicker(checkInterval)
+	defer ticker.Stop()
+
+	ctx, cancel := context.WithTimeout(parentCtx, terminationTimeout)
+	defer cancel()
+
+	slog.Info("starting address monitor")
+
+	for range ticker.C {
+		if calico.AllIPsExist(conn, calicoInterfaceNames) {
+			slog.Info("all Calico addresses exist")
+
+			break
+		}
+
+		if ctx.Err() != nil {
+			slog.Error("time to wait for address to come live has expired; killing Pod")
+
+			killPod()
+		}
+	}
 }
