@@ -23,4 +23,4 @@ resources:
   - role:pod-killer.yaml
 images:
   - name: ghcr.io/tkhq/calico-kicker
-    newTag: v0.0.1-rc1@sha256:5f550e4e6482d4db4367c2a27252f012403d190029fc60be5a1762e580b8bd2c
+    newTag: v0.0.1@sha256:f5451d2c0fa88354a64738094a849ead10eec149ed43dc76fa45bf01386a3990
