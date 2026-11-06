@@ -26,6 +26,7 @@ var (
 	checkInterval        time.Duration
 	terminationTimeout   time.Duration
 	calicoInterfaceNames []string
+	readyCheck           bool
 
 	// DeletionGracePeriodSeconds is the number of seconds to allow for the Pod to be gracefully shut down when we are requesting the destruction of our own Pod.
 	DeletionGracePeriodSeconds int64 = 10
@@ -39,6 +40,7 @@ func init() {
 
 		return nil
 	})
+	flag.BoolVar(&readyCheck, "ready", false, "check once whether all Calico addresses exist and exit 0 if so, 1 otherwise (for use as a readiness probe)")
 }
 
 func main() {
@@ -46,6 +48,10 @@ func main() {
 
 	if debug, _ := strconv.ParseBool(os.Getenv("DEBUG")); debug {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
+	}
+
+	if readyCheck {
+		os.Exit(readyExitCode())
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -103,6 +109,38 @@ func killPod() {
 	)
 }
 
+// readyExitCode performs a single address check and returns the exit code for
+// the readiness probe: 0 when every monitored interface has its address, 1
+// otherwise. Until the addresses exist the Pod is Running but not Ready, which
+// makes the race visible to anything gating on Pod readiness (DaemonSet
+// rollouts, node-roll tooling) instead of only to whoever reads these logs.
+func readyExitCode() int {
+	conn, err := rtnetlink.Dial(nil)
+	if err != nil {
+		slog.Error("failed to create netlink connection", slog.String("error", err.Error()))
+
+		return 1
+	}
+
+	defer conn.Close()
+
+	if calico.AllIPsExist(conn, interfaceNames()) {
+		return 0
+	}
+
+	return 1
+}
+
+// interfaceNames returns the configured interface names, or the Calico defaults
+// when none were given.
+func interfaceNames() []string {
+	if len(calicoInterfaceNames) < 1 || calicoInterfaceNames[0] == "" {
+		return calico.DefaultInterfaceNames
+	}
+
+	return calicoInterfaceNames
+}
+
 func waitAddresses(parentCtx context.Context) {
 	conn, err := rtnetlink.Dial(nil)
 	if err != nil {
@@ -113,9 +151,7 @@ func waitAddresses(parentCtx context.Context) {
 
 	defer conn.Close()
 
-	if len(calicoInterfaceNames) < 1 || calicoInterfaceNames[0] == "" {
-		calicoInterfaceNames = calico.DefaultInterfaceNames
-	}
+	calicoInterfaceNames = interfaceNames()
 
 	ticker := time.NewTicker(checkInterval)
 	defer ticker.Stop()
