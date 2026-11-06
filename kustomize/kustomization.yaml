@@ -14,6 +14,13 @@ patches:
                 image: ghcr.io/tkhq/calico-kicker
                 command:
                   - /calico-kicker
+                readinessProbe:
+                  exec:
+                    command:
+                      - /calico-kicker
+                      - -ready
+                  periodSeconds: 10
+                  failureThreshold: 1
                 env:
                   - name: POD_NAME
                     valueFrom:
