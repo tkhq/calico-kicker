@@ -32,14 +32,12 @@ const (
 var (
 	checkInterval        time.Duration
 	terminationTimeout   time.Duration
-	allocateAfter        time.Duration
+	remediateAfter       time.Duration
+	remediateCommand     string
 	calicoContainer      string
 	calicoInterfaceNames []string
 
-	// allocatorCommand runs Calico's one-shot tunnel address allocator, as calico-node's own startup does.
-	allocatorCommand = []string{"calico-node", "-allocate-tunnel-addrs", "-allocate-tunnel-addrs-run-once"}
-
-	// execTimeout bounds each allocator exec attempt.
+	// execTimeout bounds each remediation exec attempt.
 	execTimeout = 60 * time.Second
 
 	// DeletionGracePeriodSeconds is the number of seconds to allow for the Pod to be gracefully shut down when we are requesting the destruction of our own Pod.
@@ -49,8 +47,9 @@ var (
 func init() {
 	flag.DurationVar(&checkInterval, "check-interval", 30*time.Second, "interval at which to check for addresses")
 	flag.DurationVar(&terminationTimeout, "termination-timeout", 3*time.Minute, "total amount of time to allow for the addresses to come available before killing Pod")
-	flag.DurationVar(&allocateAfter, "allocate-after", time.Minute, "time without all addresses after which the one-shot tunnel address allocator is run in the calico-node container on each check")
-	flag.StringVar(&calicoContainer, "calico-container", "calico-node", "name of the container in our own Pod in which to run the one-shot tunnel address allocator")
+	flag.DurationVar(&remediateAfter, "remediate-after", time.Minute, "time without all addresses after which the remediation command is run in the calico-node container on each check")
+	flag.StringVar(&remediateCommand, "remediate-command", "sv restart /etc/service/enabled/node-services", "command (split on whitespace) run in the calico-node container to restart the Calico node-services daemon, which hosts the tunnel address allocator")
+	flag.StringVar(&calicoContainer, "calico-container", "calico-node", "name of the container in our own Pod in which to run the remediation command")
 	flag.Func("interface-names", "list of interface names to be monitored, overriding the defaults", func(input string) error {
 		calicoInterfaceNames = strings.Split(input, ",")
 
@@ -68,11 +67,17 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if allocateAfter >= terminationTimeout {
-		slog.Error("-allocate-after must be less than -termination-timeout",
-			slog.Duration("allocate_after", allocateAfter),
+	if remediateAfter >= terminationTimeout {
+		slog.Error("-remediate-after must be less than -termination-timeout",
+			slog.Duration("remediate_after", remediateAfter),
 			slog.Duration("termination_timeout", terminationTimeout),
 		)
+
+		os.Exit(1)
+	}
+
+	if len(strings.Fields(remediateCommand)) == 0 {
+		slog.Error("-remediate-command must not be empty")
 
 		os.Exit(1)
 	}
@@ -145,8 +150,10 @@ func (p *podClient) kill() bool {
 	return true
 }
 
-// allocate runs the one-shot tunnel address allocator in the calico-node container of our own Pod.
-func (p *podClient) allocate(parent context.Context) error {
+// remediate restarts the daemon that hosts Calico's tunnel address allocator, by running
+// remediateCommand in the calico-node container of our own Pod. A fresh daemon allocates missing
+// addresses in its initial reconcile, and there is never a second concurrent allocator.
+func (p *podClient) remediate(parent context.Context) error {
 	ctx, cancel := context.WithTimeout(parent, execTimeout)
 	defer cancel()
 
@@ -157,7 +164,7 @@ func (p *podClient) allocate(parent context.Context) error {
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: calicoContainer,
-			Command:   allocatorCommand,
+			Command:   strings.Fields(remediateCommand),
 			Stdout:    true,
 			Stderr:    true,
 		}, scheme.ParameterCodec)
@@ -172,7 +179,7 @@ func (p *podClient) allocate(parent context.Context) error {
 		return fmt.Errorf("spdy executor: %w", err)
 	}
 
-	exec, err := remotecommand.NewFallbackExecutor(wsExec, spdyExec, httpstream.IsUpgradeFailure)
+	exec, err := remotecommand.NewFallbackExecutor(wsExec, spdyExec, func(err error) bool { return httpstream.IsUpgradeFailure(err) || httpstream.IsHTTPSProxyError(err) })
 	if err != nil {
 		return fmt.Errorf("fallback executor: %w", err)
 	}
@@ -181,12 +188,21 @@ func (p *podClient) allocate(parent context.Context) error {
 
 	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: &stdout, Stderr: &stderr})
 
-	slog.Info("allocator output",
+	slog.Info("remediation command output",
 		slog.String("stdout", stdout.String()),
 		slog.String("stderr", stderr.String()),
 	)
 
-	return err
+	if err != nil {
+		return err // includes exec.CodeExitError for a non-zero exit
+	}
+
+	// runit's sv prints "timeout:" or "fail:" when the service did not restart.
+	if out := stdout.String() + stderr.String(); strings.Contains(out, "timeout:") || strings.Contains(out, "fail:") {
+		return errors.New("service restart reported failure: " + strings.TrimSpace(out))
+	}
+
+	return nil
 }
 
 func waitAddresses(ctx context.Context, pod *podClient) {
@@ -208,12 +224,12 @@ func waitAddresses(ctx context.Context, pod *podClient) {
 
 	monitor(ctx, ticker.C, time.Now,
 		func() bool { return calico.AllIPsExist(conn, calicoInterfaceNames) },
-		pod.allocate,
+		pod.remediate,
 		pod.kill,
 	)
 }
 
-// monitor checks for the addresses on every tick. Once allocateAfter has elapsed without them, it runs
+// monitor checks for the addresses on every tick. Once remediateAfter has elapsed without them, it runs
 // remediate on each tick; once terminationTimeout has elapsed, it calls kill on each tick until kill
 // succeeds. It returns when the addresses exist, kill succeeds, or ctx is done.
 func monitor(ctx context.Context, ticks <-chan time.Time, now func() time.Time,
@@ -240,7 +256,7 @@ func monitor(ctx context.Context, ticks <-chan time.Time, now func() time.Time,
 		elapsed := now().Sub(start)
 
 		if elapsed >= terminationTimeout {
-			slog.Error("time to wait for address to come live has expired; killing Pod", slog.Int("allocator_attempts", attempts))
+			slog.Error("time to wait for address to come live has expired; killing Pod", slog.Int("remediation_attempts", attempts))
 
 			if kill() {
 				return
@@ -249,22 +265,22 @@ func monitor(ctx context.Context, ticks <-chan time.Time, now func() time.Time,
 			continue
 		}
 
-		if elapsed < allocateAfter {
+		if elapsed < remediateAfter {
 			continue
 		}
 
 		attempts++
 
-		slog.Info("addresses missing; running one-shot tunnel address allocator", slog.Int("attempt", attempts))
+		slog.Info("addresses missing; restarting node-services", slog.Int("attempt", attempts))
 
 		if err := remediate(ctx); err != nil {
-			slog.Error("one-shot tunnel address allocator failed", slog.Int("attempt", attempts), slog.String("error", err.Error()))
+			slog.Error("remediation failed", slog.Int("attempt", attempts), slog.String("error", err.Error()))
 		} else {
-			slog.Info("one-shot tunnel address allocator completed", slog.Int("attempt", attempts))
+			slog.Info("remediation completed", slog.Int("attempt", attempts))
 		}
 
 		if check() {
-			slog.Info("all Calico addresses exist after running allocator", slog.Int("attempt", attempts))
+			slog.Info("all Calico addresses exist after remediation", slog.Int("attempt", attempts))
 
 			return
 		}
