@@ -15,11 +15,15 @@ on:
       - ".github/**"
       - "main.go"
       - "calico/**"
+      - "go.mod"
+      - "go.sum"
   pull_request:
     paths:
       - ".github/**"
       - "main.go"
       - "calico/**"
+      - "go.mod"
+      - "go.sum"
   workflow_dispatch: # Allows manual invocation
 
 jobs:

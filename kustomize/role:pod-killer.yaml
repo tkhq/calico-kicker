@@ -3,12 +3,20 @@ apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: pod-killer
 rules:
-  # Used for creating service account tokens to be used by the CNI plugin
+  # The kicker deletes its own Pod as a last resort when Calico's WireGuard addresses never appear.
   - apiGroups: [""]
     resources:
       - pods
     verbs:
       - delete
+  # The kicker first restarts calico-node's node-services (which hosts the tunnel address allocator) via exec in
+  # the calico-node container of its own Pod. WebSocket exec is a GET (verb "get"); the SPDY fallback is a POST ("create").
+  - apiGroups: [""]
+    resources:
+      - pods/exec
+    verbs:
+      - get
+      - create
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
