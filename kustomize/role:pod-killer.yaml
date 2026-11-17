@@ -3,12 +3,18 @@ apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: pod-killer
 rules:
-  # Used for creating service account tokens to be used by the CNI plugin
+  # The kicker deletes its own Pod as a last resort when Calico's WireGuard addresses never appear.
   - apiGroups: [""]
     resources:
       - pods
     verbs:
       - delete
+  # The kicker first runs Calico's one-shot tunnel address allocator inside the calico-node container of its own Pod.
+  - apiGroups: [""]
+    resources:
+      - pods/exec
+    verbs:
+      - create
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
